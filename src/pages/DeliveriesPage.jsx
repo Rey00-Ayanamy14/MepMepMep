@@ -1,9 +1,81 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api } from '../api/endpoints.js'
-import { DELIVERY_STATUSES } from '../constants.js'
+import { useEffect, useMemo, useState, useCallback } from 'react'
+import { api, oldApi, buildEndpoint } from '../api/endpoints.js'
+import { DELIVERY_STATUSES, DELIVERY_STATUS_MAP, LEGACY_STATUSES, ERROR_MESSAGES } from '../constants.js'
 import DeliveryDetails from '../components/deliveries/DeliveryDetails.jsx'
 import { useAuth } from '../state/AuthContext.jsx'
-import { formatDate } from '../utils/format.js'
+import { formatDate, formatTimestamp, formatTime, calculateDateDiff, isValidDate } from '../utils/format.js'
+
+
+const MAX_POINTS_PER_DELIVERY = 20
+const MAX_PRODUCTS_PER_POINT = 50
+const MIN_DELIVERY_WINDOW_HOURS = 2
+const DEFAULT_TIME_WINDOW = { start: '09:00', end: '18:00' }
+const MOSCOW_COORDS = { lat: 55.7558, lon: 37.6173 }
+
+
+function validateCoordinates(lat, lon) {
+  if (lat < -90 || lat > 90) return 'Широта должна быть от -90 до 90'
+  if (lon < -180 || lon > 180) return 'Долгота должна быть от -180 до 180'
+  return null
+}
+
+function validateTimeWindow(start, end) {
+  const [startH, startM] = start.split(':').map(Number)
+  const [endH, endM] = end.split(':').map(Number)
+  const startMinutes = startH * 60 + startM
+  const endMinutes = endH * 60 + endM
+  if (endMinutes - startMinutes < MIN_DELIVERY_WINDOW_HOURS * 60) {
+    return `Минимальное окно доставки - ${MIN_DELIVERY_WINDOW_HOURS} часа`
+  }
+  return null
+}
+
+
+function createDeliveryPoint(seq = 1) {
+  return {
+    sequence: seq,
+    latitude: MOSCOW_COORDS.lat,
+    longitude: MOSCOW_COORDS.lon,
+    products: []
+  }
+}
+
+
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371 // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLon = (lon2 - lon1) * Math.PI / 180
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
+
+function optimizeRoute(points) {
+  if (points.length <= 2) return points
+  const result = [points[0]]
+  const remaining = points.slice(1)
+  while (remaining.length > 0) {
+    const last = result[result.length - 1]
+    let nearestIdx = 0
+    let nearestDist = Infinity
+    for (let i = 0; i < remaining.length; i++) {
+      const dist = calculateDistance(
+        last.latitude, last.longitude,
+        remaining[i].latitude, remaining[i].longitude
+      )
+      if (dist < nearestDist) {
+        nearestDist = dist
+        nearestIdx = i
+      }
+    }
+    result.push(remaining.splice(nearestIdx, 1)[0])
+  }
+  return result
+}
 
 const createPoint = (index = 1) => ({
   sequence: index,
@@ -21,24 +93,40 @@ const initialForm = {
   points: [createPoint(1)]
 }
 
-const sampleGenerationPayload = `{
-  "2025-01-30": [
-    {
-      "route": [
-        {"sequence": 1, "latitude": 55.75, "longitude": 37.61},
-        {"sequence": 2, "latitude": 55.78, "longitude": 37.65}
-      ],
-      "products": [
-        {"productId": 1, "quantity": 5}
-      ]
-    }
-  ]
-}`
 
-const sampleRoutePoints = `[
-  {"latitude": 55.75, "longitude": 37.61},
-  {"latitude": 55.78, "longitude": 37.65}
-]`
+const initialFormExtended = {
+  courierId: '',
+  vehicleId: '',
+  deliveryDate: '',
+  timeStart: '09:00',
+  timeEnd: '18:00',
+  priority: 'normal',
+  notes: '',
+  points: [createPoint(1)]
+}
+
+// Хелперы для массовой генерации
+const createGenerationPoint = (seq = 1) => ({
+  sequence: seq,
+  latitude: '',
+  longitude: ''
+})
+
+const createGenerationDelivery = () => ({
+  route: [createGenerationPoint(1)],
+  products: [{ productId: '', quantity: 1 }]
+})
+
+const createGenerationDate = () => ({
+  date: '',
+  deliveries: [createGenerationDelivery()]
+})
+
+// Хелперы для расчета маршрута
+const createRoutePoint = () => ({
+  latitude: '',
+  longitude: ''
+})
 
 export default function DeliveriesPage() {
   const { token } = useAuth()
@@ -64,13 +152,13 @@ export default function DeliveriesPage() {
 
   const [selectedDelivery, setSelectedDelivery] = useState(null)
 
-  const [generationInput, setGenerationInput] = useState(
-    sampleGenerationPayload
-  )
+  // Массовая генерация - структурированные данные
+  const [generationDates, setGenerationDates] = useState([createGenerationDate()])
   const [generationResult, setGenerationResult] = useState(null)
   const [generationError, setGenerationError] = useState(null)
 
-  const [routePointsInput, setRoutePointsInput] = useState(sampleRoutePoints)
+  // Расчет маршрута - структурированные данные
+  const [routePoints, setRoutePoints] = useState([createRoutePoint(), createRoutePoint()])
   const [routeResult, setRouteResult] = useState(null)
   const [routeError, setRouteError] = useState(null)
   const [calculatingRoute, setCalculatingRoute] = useState(false)
@@ -278,14 +366,147 @@ export default function DeliveriesPage() {
     setFilters({ date: '', courier_id: '', status: '' })
   }
 
+  // === Функции для массовой генерации ===
+  const addGenerationDate = () => {
+    setGenerationDates((prev) => [...prev, createGenerationDate()])
+  }
+
+  const removeGenerationDate = (dateIndex) => {
+    setGenerationDates((prev) => {
+      if (prev.length === 1) return prev
+      return prev.filter((_, idx) => idx !== dateIndex)
+    })
+  }
+
+  const updateGenerationDateField = (dateIndex, value) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      dates[dateIndex] = { ...dates[dateIndex], date: value }
+      return dates
+    })
+  }
+
+  const addDeliveryToDate = (dateIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      dates[dateIndex] = {
+        ...dates[dateIndex],
+        deliveries: [...dates[dateIndex].deliveries, createGenerationDelivery()]
+      }
+      return dates
+    })
+  }
+
+  const removeDeliveryFromDate = (dateIndex, deliveryIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      if (dates[dateIndex].deliveries.length === 1) return prev
+      dates[dateIndex] = {
+        ...dates[dateIndex],
+        deliveries: dates[dateIndex].deliveries.filter((_, idx) => idx !== deliveryIndex)
+      }
+      return dates
+    })
+  }
+
+  const addRoutePointToDelivery = (dateIndex, deliveryIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const delivery = dates[dateIndex].deliveries[deliveryIndex]
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...delivery,
+        route: [...delivery.route, createGenerationPoint(delivery.route.length + 1)]
+      }
+      return dates
+    })
+  }
+
+  const removeRoutePointFromDelivery = (dateIndex, deliveryIndex, pointIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const delivery = dates[dateIndex].deliveries[deliveryIndex]
+      if (delivery.route.length === 1) return prev
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...delivery,
+        route: delivery.route.filter((_, idx) => idx !== pointIndex)
+      }
+      return dates
+    })
+  }
+
+  const updateRoutePointField = (dateIndex, deliveryIndex, pointIndex, field, value) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const route = [...dates[dateIndex].deliveries[deliveryIndex].route]
+      route[pointIndex] = { ...route[pointIndex], [field]: value }
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...dates[dateIndex].deliveries[deliveryIndex],
+        route
+      }
+      return dates
+    })
+  }
+
+  const addProductToDelivery = (dateIndex, deliveryIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const delivery = dates[dateIndex].deliveries[deliveryIndex]
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...delivery,
+        products: [...delivery.products, { productId: '', quantity: 1 }]
+      }
+      return dates
+    })
+  }
+
+  const removeProductFromDelivery = (dateIndex, deliveryIndex, productIndex) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const delivery = dates[dateIndex].deliveries[deliveryIndex]
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...delivery,
+        products: delivery.products.filter((_, idx) => idx !== productIndex)
+      }
+      return dates
+    })
+  }
+
+  const updateDeliveryProductField = (dateIndex, deliveryIndex, productIndex, field, value) => {
+    setGenerationDates((prev) => {
+      const dates = [...prev]
+      const products = [...dates[dateIndex].deliveries[deliveryIndex].products]
+      products[productIndex] = { ...products[productIndex], [field]: value }
+      dates[dateIndex].deliveries[deliveryIndex] = {
+        ...dates[dateIndex].deliveries[deliveryIndex],
+        products
+      }
+      return dates
+    })
+  }
+
   const handleGenerateDeliveries = async (event) => {
     event.preventDefault()
     setGenerationError(null)
     try {
-      const parsed = JSON.parse(generationInput)
-      const response = await api.deliveries.generate(token, {
-        deliveryData: parsed
-      })
+      // Конвертируем структурированные данные в формат API
+      const deliveryData = {}
+      for (const dateEntry of generationDates) {
+        if (!dateEntry.date) continue
+        deliveryData[dateEntry.date] = dateEntry.deliveries.map((delivery) => ({
+          route: delivery.route.map((point) => ({
+            sequence: Number(point.sequence),
+            latitude: Number(point.latitude),
+            longitude: Number(point.longitude)
+          })),
+          products: delivery.products
+            .filter((p) => p.productId)
+            .map((p) => ({
+              productId: Number(p.productId),
+              quantity: Number(p.quantity)
+            }))
+        }))
+      }
+      const response = await api.deliveries.generate(token, { deliveryData })
       setGenerationResult(response)
       await loadDeliveries()
     } catch (err) {
@@ -293,14 +514,37 @@ export default function DeliveriesPage() {
     }
   }
 
+  // === Функции для расчета маршрута ===
+  const addCalcRoutePoint = () => {
+    setRoutePoints((prev) => [...prev, createRoutePoint()])
+  }
+
+  const removeCalcRoutePoint = (index) => {
+    setRoutePoints((prev) => {
+      if (prev.length <= 2) return prev
+      return prev.filter((_, idx) => idx !== index)
+    })
+  }
+
+  const updateCalcRoutePointField = (index, field, value) => {
+    setRoutePoints((prev) => {
+      const points = [...prev]
+      points[index] = { ...points[index], [field]: value }
+      return points
+    })
+  }
+
   const handleCalculateRoute = async (event) => {
     event.preventDefault()
     setRouteError(null)
     setRouteResult(null)
     try {
-      const parsed = JSON.parse(routePointsInput)
+      const points = routePoints.map((p) => ({
+        latitude: Number(p.latitude),
+        longitude: Number(p.longitude)
+      }))
       setCalculatingRoute(true)
-      const response = await api.route.calculate(token, { points: parsed })
+      const response = await api.route.calculate(token, { points })
       setRouteResult(response)
     } catch (err) {
       setRouteError(err.message)
@@ -664,18 +908,178 @@ export default function DeliveriesPage() {
       <section className="card">
         <div className="section-head">
           <h2>Массовая генерация</h2>
+          <button className="btn ghost" type="button" onClick={addGenerationDate}>
+            Добавить дату
+          </button>
         </div>
         <p className="muted">
-          Введите JSON по схеме эндпоинта `/deliveries/generate`. Сервис
-          автоматически распределит курьеров и машины.
+          Создайте несколько доставок на разные даты. Сервис автоматически
+          распределит курьеров и машины.
         </p>
         {generationError && <div className="alert danger">{generationError}</div>}
         <form className="form-grid" onSubmit={handleGenerateDeliveries}>
-          <textarea
-            rows={8}
-            value={generationInput}
-            onChange={(event) => setGenerationInput(event.target.value)}
-          />
+          <div className="points-section">
+            {generationDates.map((dateEntry, dateIndex) => (
+              <div key={dateIndex} className="point-card">
+                <div className="point-card-head">
+                  <strong>Дата {dateIndex + 1}</strong>
+                  {generationDates.length > 1 && (
+                    <button
+                      type="button"
+                      className="btn ghost danger"
+                      onClick={() => removeGenerationDate(dateIndex)}
+                    >
+                      Удалить дату
+                    </button>
+                  )}
+                </div>
+                <label className="form-field">
+                  <span>Дата доставки</span>
+                  <input
+                    type="date"
+                    value={dateEntry.date}
+                    onChange={(e) => updateGenerationDateField(dateIndex, e.target.value)}
+                    required
+                  />
+                </label>
+
+                <div className="products-block">
+                  <div className="section-head">
+                    <p>Доставки на эту дату</p>
+                    <button
+                      className="btn ghost"
+                      type="button"
+                      onClick={() => addDeliveryToDate(dateIndex)}
+                    >
+                      Добавить доставку
+                    </button>
+                  </div>
+
+                  {dateEntry.deliveries.map((delivery, deliveryIndex) => (
+                    <div key={deliveryIndex} className="nested-card">
+                      <div className="point-card-head">
+                        <strong>Доставка {deliveryIndex + 1}</strong>
+                        {dateEntry.deliveries.length > 1 && (
+                          <button
+                            type="button"
+                            className="btn ghost danger"
+                            onClick={() => removeDeliveryFromDate(dateIndex, deliveryIndex)}
+                          >
+                            Удалить
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="products-block">
+                        <div className="section-head">
+                          <p>Точки маршрута</p>
+                          <button
+                            className="btn ghost"
+                            type="button"
+                            onClick={() => addRoutePointToDelivery(dateIndex, deliveryIndex)}
+                          >
+                            Добавить точку
+                          </button>
+                        </div>
+                        {delivery.route.map((point, pointIndex) => (
+                          <div key={pointIndex} className="product-row">
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="№"
+                              value={point.sequence}
+                              onChange={(e) =>
+                                updateRoutePointField(dateIndex, deliveryIndex, pointIndex, 'sequence', e.target.value)
+                              }
+                              style={{ width: '60px' }}
+                            />
+                            <input
+                              type="number"
+                              step="0.0001"
+                              placeholder="Широта"
+                              value={point.latitude}
+                              onChange={(e) =>
+                                updateRoutePointField(dateIndex, deliveryIndex, pointIndex, 'latitude', e.target.value)
+                              }
+                              required
+                            />
+                            <input
+                              type="number"
+                              step="0.0001"
+                              placeholder="Долгота"
+                              value={point.longitude}
+                              onChange={(e) =>
+                                updateRoutePointField(dateIndex, deliveryIndex, pointIndex, 'longitude', e.target.value)
+                              }
+                              required
+                            />
+                            {delivery.route.length > 1 && (
+                              <button
+                                type="button"
+                                className="btn ghost danger"
+                                onClick={() => removeRoutePointFromDelivery(dateIndex, deliveryIndex, pointIndex)}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="products-block">
+                        <div className="section-head">
+                          <p>Товары</p>
+                          <button
+                            className="btn ghost"
+                            type="button"
+                            onClick={() => addProductToDelivery(dateIndex, deliveryIndex)}
+                          >
+                            Добавить товар
+                          </button>
+                        </div>
+                        {delivery.products.map((product, productIndex) => (
+                          <div key={productIndex} className="product-row">
+                            <select
+                              value={product.productId}
+                              onChange={(e) =>
+                                updateDeliveryProductField(dateIndex, deliveryIndex, productIndex, 'productId', e.target.value)
+                              }
+                            >
+                              <option value="">Выберите товар</option>
+                              {products.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.name}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Кол-во"
+                              value={product.quantity}
+                              onChange={(e) =>
+                                updateDeliveryProductField(dateIndex, deliveryIndex, productIndex, 'quantity', e.target.value)
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="btn ghost danger"
+                              onClick={() => removeProductFromDelivery(dateIndex, deliveryIndex, productIndex)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                        {delivery.products.length === 0 && (
+                          <p className="muted">Добавьте товары для этой доставки</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
           <button className="btn primary">Запустить генерацию</button>
         </form>
         {generationResult && (
@@ -688,18 +1092,54 @@ export default function DeliveriesPage() {
       <section className="card">
         <div className="section-head">
           <h2>Расчет маршрута</h2>
+          <button className="btn ghost" type="button" onClick={addCalcRoutePoint}>
+            Добавить точку
+          </button>
         </div>
         <p className="muted">
-          Быстрая проверка времени прохождения точки маршрута через эндпоинт
-          `/routes/calculate`.
+          Быстрая проверка расстояния и времени прохождения маршрута.
+          Минимум 2 точки.
         </p>
         {routeError && <div className="alert danger">{routeError}</div>}
         <form className="form-grid" onSubmit={handleCalculateRoute}>
-          <textarea
-            rows={6}
-            value={routePointsInput}
-            onChange={(event) => setRoutePointsInput(event.target.value)}
-          />
+          <div className="points-section">
+            {routePoints.map((point, index) => (
+              <div key={index} className="route-point-row">
+                <span className="point-number">{index + 1}</span>
+                <label className="form-field">
+                  <span>Широта</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    placeholder="55.7558"
+                    value={point.latitude}
+                    onChange={(e) => updateCalcRoutePointField(index, 'latitude', e.target.value)}
+                    required
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Долгота</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    placeholder="37.6173"
+                    value={point.longitude}
+                    onChange={(e) => updateCalcRoutePointField(index, 'longitude', e.target.value)}
+                    required
+                  />
+                </label>
+                {routePoints.length > 2 && (
+                  <button
+                    type="button"
+                    className="btn ghost danger"
+                    onClick={() => removeCalcRoutePoint(index)}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
           <button className="btn primary" disabled={calculatingRoute}>
             {calculatingRoute ? 'Расчет...' : 'Рассчитать'}
           </button>

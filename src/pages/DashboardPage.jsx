@@ -1,7 +1,38 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api/endpoints.js'
+import { useEffect, useState, useMemo, useCallback } from 'react'
+import { api, oldApi } from '../api/endpoints.js'
 import { useAuth } from '../state/AuthContext.jsx'
-import { formatDate } from '../utils/format.js'
+import { formatDate, formatTimestamp, formatCurrency, calculateDateDiff } from '../utils/format.js'
+import { DELIVERY_STATUS_MAP, FEATURES, APP_NAME } from '../constants.js'
+
+
+const REFRESH_INTERVAL = 30000
+const MAX_RECENT_ITEMS = 5
+const CHART_COLORS = ['#4CAF50', '#2196F3', '#FFC107', '#F44336']
+
+
+function groupByStatus(items) {
+  return items.reduce((acc, item) => {
+    const status = item.status || 'unknown'
+    acc[status] = (acc[status] || 0) + 1
+    return acc
+  }, {})
+}
+
+
+function isToday(dateString) {
+  const today = new Date().toISOString().slice(0, 10)
+  return dateString === today
+}
+
+
+function calculateStats(data) {
+  return {
+    total: data.length,
+    active: data.filter(d => d.status === 'in_progress').length,
+    completed: data.filter(d => d.status === 'completed').length,
+    cancelled: data.filter(d => d.status === 'cancelled').length
+  }
+}
 
 export default function DashboardPage() {
   const { token, user } = useAuth()
@@ -9,8 +40,46 @@ export default function DashboardPage() {
   const [error, setError] = useState(null)
   const [data, setData] = useState({})
 
+  
+  const [lastRefresh, setLastRefresh] = useState(Date.now())
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [selectedPeriod, setSelectedPeriod] = useState('week')
+  const [chartData, setChartData] = useState(null)
+
+  
+  const stats = useMemo(() => {
+    if (data.deliveries) {
+      return calculateStats(data.deliveries)
+    }
+    return { total: 0, active: 0, completed: 0, cancelled: 0 }
+  }, [data.deliveries])
+
+  const groupedDeliveries = useMemo(() => {
+    if (data.deliveries) {
+      return groupByStatus(data.deliveries)
+    }
+    return {}
+  }, [data.deliveries])
+
+  
+  const refreshData = useCallback(() => {
+    setLastRefresh(Date.now())
+  }, [])
+
+  
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => {
+      refreshData()
+    }, REFRESH_INTERVAL)
+    return () => clearInterval(interval)
+  }, [autoRefresh, refreshData])
+
   useEffect(() => {
     let ignore = false
+
+    
+    const loadStartTime = Date.now()
 
     const load = async () => {
       setLoading(true)

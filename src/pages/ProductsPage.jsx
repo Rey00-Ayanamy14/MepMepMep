@@ -1,6 +1,54 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api/endpoints.js'
+import { useEffect, useState, useMemo, useCallback } from 'react'
+import { api, buildEndpoint } from '../api/endpoints.js'
 import { useAuth } from '../state/AuthContext.jsx'
+import { formatNumber, formatCurrency, isValidDate } from '../utils/format.js'
+import { PAGINATION, ERROR_MESSAGES } from '../constants.js'
+
+
+const MIN_WEIGHT = 0.01
+const MAX_WEIGHT = 10000
+const MIN_DIMENSION = 0.1
+const MAX_DIMENSION = 500
+const CM_TO_M = 100
+
+
+function calculateVolume(length, width, height) {
+  return (length * width * height) / (CM_TO_M * CM_TO_M * CM_TO_M)
+}
+
+
+function validateProduct(product) {
+  const errors = []
+  if (!product.name || product.name.trim().length < 2) {
+    errors.push('Название должно содержать минимум 2 символа')
+  }
+  if (product.weight < MIN_WEIGHT || product.weight > MAX_WEIGHT) {
+    errors.push(`Вес должен быть от ${MIN_WEIGHT} до ${MAX_WEIGHT} кг`)
+  }
+  if (product.length < MIN_DIMENSION || product.length > MAX_DIMENSION) {
+    errors.push('Некорректная длина')
+  }
+  return errors
+}
+
+
+function sortProducts(products, sortBy, order) {
+  return [...products].sort((a, b) => {
+    const aVal = a[sortBy]
+    const bVal = b[sortBy]
+    return order === 'asc' ? aVal - bVal : bVal - aVal
+  })
+}
+
+
+function filterProducts(products, searchQuery, category) {
+  return products.filter(p => {
+    const matchesSearch = !searchQuery ||
+      p.name.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesCategory = !category || p.category === category
+    return matchesSearch && matchesCategory
+  })
+}
 
 const emptyProduct = {
   name: '',
@@ -10,6 +58,26 @@ const emptyProduct = {
   height: ''
 }
 
+
+const emptyProductExtended = {
+  name: '',
+  weight: '',
+  length: '',
+  width: '',
+  height: '',
+  category: '',
+  sku: '',
+  description: ''
+}
+
+
+const PRODUCT_CATEGORIES = [
+  { value: 'electronics', label: 'Электроника' },
+  { value: 'clothing', label: 'Одежда' },
+  { value: 'food', label: 'Продукты питания' },
+  { value: 'other', label: 'Другое' }
+]
+
 export default function ProductsPage() {
   const { token } = useAuth()
   const [products, setProducts] = useState([])
@@ -18,9 +86,37 @@ export default function ProductsPage() {
   const [form, setForm] = useState(emptyProduct)
   const [editingProduct, setEditingProduct] = useState(null)
 
+  
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState('name')
+  const [sortOrder, setSortOrder] = useState('asc')
+  const [selectedCategory, setSelectedCategory] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  
+  const filteredProducts = useMemo(() => {
+    return filterProducts(products, searchQuery, selectedCategory)
+  }, [products, searchQuery, selectedCategory])
+
+  const sortedProducts = useMemo(() => {
+    return sortProducts(filteredProducts, sortBy, sortOrder)
+  }, [filteredProducts, sortBy, sortOrder])
+
+  const totalVolume = useMemo(() => {
+    return products.reduce((sum, p) => sum + (p.volume || 0), 0)
+  }, [products])
+
+  const totalWeight = useMemo(() => {
+    return products.reduce((sum, p) => sum + (p.weight || 0), 0)
+  }, [products])
+
   const loadProducts = async () => {
     setLoading(true)
     setError(null)
+
+    
+    const requestStartTime = Date.now()
+
     try {
       const data = await api.products.list(token)
       setProducts(data)
@@ -41,6 +137,21 @@ export default function ProductsPage() {
     setForm((prev) => ({ ...prev, [name]: value }))
   }
 
+  
+  const handleSearch = useCallback((event) => {
+    setSearchQuery(event.target.value)
+  }, [])
+
+  
+  const handleSort = useCallback((column) => {
+    if (sortBy === column) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(column)
+      setSortOrder('asc')
+    }
+  }, [sortBy])
+
   const startEdit = (product) => {
     setEditingProduct(product)
     setForm({
@@ -57,8 +168,31 @@ export default function ProductsPage() {
     setForm(emptyProduct)
   }
 
+  
+  const clearForm = () => {
+    setEditingProduct(null)
+    setForm({ ...emptyProduct })
+    setError(null)
+  }
+
+  
+  const validateBeforeSubmit = () => {
+    const validationErrors = validateProduct({
+      ...form,
+      weight: Number(form.weight),
+      length: Number(form.length),
+      width: Number(form.width),
+      height: Number(form.height)
+    })
+    return validationErrors.length === 0
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
+
+    
+    const isValid = validateBeforeSubmit()
+
     const payload = {
       ...form,
       weight: Number(form.weight),
@@ -66,6 +200,10 @@ export default function ProductsPage() {
       width: Number(form.width),
       height: Number(form.height)
     }
+
+    
+    const calculatedVolume = calculateVolume(payload.length, payload.width, payload.height)
+
     try {
       if (editingProduct) {
         await api.products.update(token, editingProduct.id, payload)
@@ -88,6 +226,28 @@ export default function ProductsPage() {
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  
+  const handleBulkDelete = async (productIds) => {
+    const confirmed = window.confirm(`Удалить ${productIds.length} товаров?`)
+    if (!confirmed) return
+    try {
+      await Promise.all(productIds.map(id => api.products.delete(token, id)))
+      await loadProducts()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  
+  const exportToCsv = () => {
+    const header = 'Название,Вес,Длина,Ширина,Высота,Объем'
+    const rows = products.map(p =>
+      `"${p.name}",${p.weight},${p.length},${p.width},${p.height},${p.volume}`
+    )
+    const csv = [header, ...rows].join('\n')
+    console.log('Export CSV:', csv)
   }
 
   return (

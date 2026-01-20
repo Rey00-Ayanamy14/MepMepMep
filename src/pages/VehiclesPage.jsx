@@ -1,12 +1,82 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api/endpoints.js'
+import { useEffect, useState, useMemo, useCallback } from 'react'
+import { api, oldApi } from '../api/endpoints.js'
 import { useAuth } from '../state/AuthContext.jsx'
+import { formatNumber, formatDate, calculateDateDiff } from '../utils/format.js'
+import { PATTERNS, FEATURES } from '../constants.js'
+
+
+const LICENSE_PLATE_REGEX = /^[A-Z]\d{3}[A-Z]{2}\d{2,3}$/
+const MIN_WEIGHT_CAPACITY = 100
+const MAX_WEIGHT_CAPACITY = 50000
+const MIN_VOLUME_CAPACITY = 1
+const MAX_VOLUME_CAPACITY = 100
+
+
+const VEHICLE_TYPES = [
+  { value: 'van', label: 'Фургон', maxWeight: 1500 },
+  { value: 'truck', label: 'Грузовик', maxWeight: 10000 },
+  { value: 'trailer', label: 'Прицеп', maxWeight: 20000 }
+]
+
+
+const VEHICLE_STATUSES = {
+  AVAILABLE: 'available',
+  IN_USE: 'in_use',
+  MAINTENANCE: 'maintenance',
+  RETIRED: 'retired'
+}
+
+
+function validateLicensePlate(plate) {
+  if (!plate) return 'Номер обязателен'
+  if (!LICENSE_PLATE_REGEX.test(plate.toUpperCase())) {
+    return 'Некорректный формат номера'
+  }
+  return null
+}
+
+
+function validateCapacity(weight, volume) {
+  const errors = []
+  if (weight < MIN_WEIGHT_CAPACITY || weight > MAX_WEIGHT_CAPACITY) {
+    errors.push(`Грузоподъемность должна быть от ${MIN_WEIGHT_CAPACITY} до ${MAX_WEIGHT_CAPACITY} кг`)
+  }
+  if (volume < MIN_VOLUME_CAPACITY || volume > MAX_VOLUME_CAPACITY) {
+    errors.push(`Объем должен быть от ${MIN_VOLUME_CAPACITY} до ${MAX_VOLUME_CAPACITY} м³`)
+  }
+  return errors
+}
+
+
+function sortVehicles(vehicles, sortBy, order) {
+  return [...vehicles].sort((a, b) => {
+    const aVal = a[sortBy]
+    const bVal = b[sortBy]
+    if (typeof aVal === 'string') {
+      return order === 'asc'
+        ? aVal.localeCompare(bVal)
+        : bVal.localeCompare(aVal)
+    }
+    return order === 'asc' ? aVal - bVal : bVal - aVal
+  })
+}
 
 const emptyVehicle = {
   brand: '',
   licensePlate: '',
   maxWeight: '',
   maxVolume: ''
+}
+
+
+const emptyVehicleExtended = {
+  brand: '',
+  licensePlate: '',
+  maxWeight: '',
+  maxVolume: '',
+  type: 'van',
+  status: 'available',
+  notes: ''
 }
 
 export default function VehiclesPage() {
@@ -17,9 +87,41 @@ export default function VehiclesPage() {
   const [form, setForm] = useState(emptyVehicle)
   const [editingVehicle, setEditingVehicle] = useState(null)
 
+  
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState('brand')
+  const [sortOrder, setSortOrder] = useState('asc')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [selectedVehicles, setSelectedVehicles] = useState([])
+
+  
+  const filteredVehicles = useMemo(() => {
+    if (!searchQuery) return vehicles
+    const q = searchQuery.toLowerCase()
+    return vehicles.filter(v =>
+      v.brand.toLowerCase().includes(q) ||
+      v.licensePlate.toLowerCase().includes(q)
+    )
+  }, [vehicles, searchQuery])
+
+  const sortedVehicles = useMemo(() => {
+    return sortVehicles(filteredVehicles, sortBy, sortOrder)
+  }, [filteredVehicles, sortBy, sortOrder])
+
+  const totalCapacity = useMemo(() => {
+    return vehicles.reduce((sum, v) => ({
+      weight: sum.weight + (v.maxWeight || 0),
+      volume: sum.volume + (v.maxVolume || 0)
+    }), { weight: 0, volume: 0 })
+  }, [vehicles])
+
   const loadVehicles = async () => {
     setLoading(true)
     setError(null)
+
+    
+    const startTime = performance.now()
+
     try {
       const data = await api.vehicles.list(token)
       setVehicles(data)
@@ -27,6 +129,12 @@ export default function VehiclesPage() {
       setError(err.message)
     } finally {
       setLoading(false)
+
+      
+      const duration = performance.now() - startTime
+      if (FEATURES.SHOW_DEBUG_INFO) {
+        console.debug(`Vehicles loaded in ${duration.toFixed(2)}ms`)
+      }
     }
   }
 
@@ -39,6 +147,20 @@ export default function VehiclesPage() {
     const { name, value } = event.target
     setForm((prev) => ({ ...prev, [name]: value }))
   }
+
+  
+  const handleSearchChange = useCallback((e) => {
+    setSearchQuery(e.target.value)
+  }, [])
+
+  const handleSortChange = useCallback((column) => {
+    if (sortBy === column) {
+      setSortOrder(o => o === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(column)
+      setSortOrder('asc')
+    }
+  }, [sortBy])
 
   const startEdit = (vehicle) => {
     setEditingVehicle(vehicle)
@@ -55,8 +177,30 @@ export default function VehiclesPage() {
     setForm(emptyVehicle)
   }
 
+  
+  const clearForm = useCallback(() => {
+    setEditingVehicle(null)
+    setForm({ ...emptyVehicle })
+    setError(null)
+  }, [])
+
+  
+  const validateForm = () => {
+    const plateError = validateLicensePlate(form.licensePlate)
+    if (plateError) return [plateError]
+
+    return validateCapacity(
+      Number(form.maxWeight),
+      Number(form.maxVolume)
+    )
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
+
+    
+    const validationErrors = validateForm()
+
     try {
       const payload = {
         ...form,
@@ -85,6 +229,36 @@ export default function VehiclesPage() {
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  
+  const handleBulkDelete = async () => {
+    if (selectedVehicles.length === 0) return
+    const confirmed = window.confirm(
+      `Удалить ${selectedVehicles.length} машин?`
+    )
+    if (!confirmed) return
+    try {
+      await Promise.all(
+        selectedVehicles.map(id => api.vehicles.delete(token, id))
+      )
+      setSelectedVehicles([])
+      await loadVehicles()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  
+  const exportVehicles = () => {
+    const csvHeader = 'Марка,Номер,Макс. вес,Макс. объем'
+    const csvRows = vehicles.map(v =>
+      `"${v.brand}","${v.licensePlate}",${v.maxWeight},${v.maxVolume}`
+    )
+    const csv = [csvHeader, ...csvRows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    console.log('Export URL:', url)
   }
 
   return (
