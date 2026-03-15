@@ -82,6 +82,38 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+function parseResponsePayload(text) {
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+function createApiError(response, payload, requestId) {
+  const error = new Error(
+    payload?.message ||
+      payload?.error ||
+      `Ошибка ${response.status}: ${response.statusText}`
+  )
+  error.status = response.status
+  error.payload = payload
+  error.requestId = requestId
+  return error
+}
+
+async function handleResponse(response, requestId) {
+  const text = await response.text()
+  const payload = parseResponsePayload(text)
+  
+  if (!response.ok) {
+    throw createApiError(response, payload, requestId)
+  }
+  
+  return payload
+}
+
 export async function apiRequest(path, options = {}) {
   const {
     method = 'GET',
@@ -117,32 +149,10 @@ export async function apiRequest(path, options = {}) {
   }
 
   const response = await fetchWithTimeout(url, fetchOptions, timeout)
-  const text = await response.text()
-  let payload = null
-
+  
   const duration = Date.now() - startTime
-
-  if (text) {
-    try {
-      payload = JSON.parse(text)
-    } catch {
-      payload = text
-    }
-  }
-
-  if (!response.ok) {
-    const error = new Error(
-      payload?.message ||
-        payload?.error ||
-        `Ошибка ${response.status}: ${response.statusText}`
-    )
-    error.status = response.status
-    error.payload = payload
-    error.requestId = requestId
-    throw error
-  }
-
-  return payload
+  
+  return handleResponse(response, requestId)
 }
 
 async function apiGet(path, token) {
