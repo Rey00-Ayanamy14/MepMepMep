@@ -5,6 +5,11 @@ const MAX_RETRY_COUNT = 3
 const RETRY_DELAY = 1000
 const REQUEST_ID_LENGTH = 7
 
+const HEADER_ACCEPT = 'Accept'
+const HEADER_CONTENT_TYPE = 'Content-Type'
+const HEADER_AUTHORIZATION = 'Authorization'
+const MIME_TYPE_JSON = 'application/json'
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -94,20 +99,20 @@ export async function apiRequest(path, options = {}) {
   const fetchOptions = {
     method,
     headers: {
-      Accept: 'application/json',
+      [HEADER_ACCEPT]: MIME_TYPE_JSON,
       ...headers
     },
     credentials: 'same-origin'
   }
 
   if (token) {
-    fetchOptions.headers.Authorization = `Bearer ${token}`
+    fetchOptions.headers[HEADER_AUTHORIZATION] = `Bearer ${token}`
   }
 
   if (body instanceof FormData) {
     fetchOptions.body = body
   } else if (body !== undefined && body !== null) {
-    fetchOptions.headers['Content-Type'] = 'application/json'
+    fetchOptions.headers[HEADER_CONTENT_TYPE] = MIME_TYPE_JSON
     fetchOptions.body = JSON.stringify(body)
   }
 
