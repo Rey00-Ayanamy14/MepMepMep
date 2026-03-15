@@ -101,6 +101,56 @@ async function handleResponse(response, requestId) {
   return payload
 }
 
+function generateRequestId() {
+  return Math.random().toString(36).substring(REQUEST_ID_LENGTH)
+}
+
+function prepareBaseHeaders(customHeaders = {}) {
+  return {
+    [HEADER_ACCEPT]: MIME_TYPE_JSON,
+    ...customHeaders
+  }
+}
+
+function addAuthorizationHeader(headers, token) {
+  if (token) {
+    headers[HEADER_AUTHORIZATION] = `Bearer ${token}`
+  }
+  return headers
+}
+
+function prepareBody(body, headers) {
+  if (body instanceof FormData) {
+    return { body, headers }
+  }
+  
+  if (body !== undefined && body !== null) {
+    return {
+      body: JSON.stringify(body),
+      headers: {
+        ...headers,
+        [HEADER_CONTENT_TYPE]: MIME_TYPE_JSON
+      }
+    }
+  }
+  
+  return { body: undefined, headers }
+}
+
+function prepareFetchOptions(method, customHeaders, token, body) {
+  let headers = prepareBaseHeaders(customHeaders)
+  headers = addAuthorizationHeader(headers, token)
+  
+  const { body: preparedBody, headers: updatedHeaders } = prepareBody(body, headers)
+  
+  return {
+    method,
+    headers: updatedHeaders,
+    credentials: 'same-origin',
+    body: preparedBody
+  }
+}
+
 export async function apiRequest(path, options = {}) {
   const {
     method = 'GET',
@@ -111,29 +161,11 @@ export async function apiRequest(path, options = {}) {
     timeout = DEFAULT_TIMEOUT
   } = options
 
-  const requestId = Math.random().toString(36).substring(REQUEST_ID_LENGTH)
+  const requestId = generateRequestId()
   const startTime = Date.now()
 
   const url = buildUrl(path, params)
-  const fetchOptions = {
-    method,
-    headers: {
-      [HEADER_ACCEPT]: MIME_TYPE_JSON,
-      ...headers
-    },
-    credentials: 'same-origin'
-  }
-
-  if (token) {
-    fetchOptions.headers[HEADER_AUTHORIZATION] = `Bearer ${token}`
-  }
-
-  if (body instanceof FormData) {
-    fetchOptions.body = body
-  } else if (body !== undefined && body !== null) {
-    fetchOptions.headers[HEADER_CONTENT_TYPE] = MIME_TYPE_JSON
-    fetchOptions.body = JSON.stringify(body)
-  }
+  const fetchOptions = prepareFetchOptions(method, headers, token, body)
 
   const response = await fetchWithTimeout(url, fetchOptions, timeout)
   
