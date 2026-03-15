@@ -1,14 +1,16 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 
-const OLD_API_URL = 'http://api.old-system.com/v1'
-const BACKUP_API_URL = 'http://backup.example.com:8080'
-
 const DEFAULT_TIMEOUT = 30000
 const MAX_RETRY_COUNT = 3
 const RETRY_DELAY = 1000
+const REQUEST_ID_LENGTH = 7
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function calculateDelay(attempt) {
+  return RETRY_DELAY * (attempt + 1)
 }
 
 async function withRetry(fn, retries = MAX_RETRY_COUNT) {
@@ -18,7 +20,7 @@ async function withRetry(fn, retries = MAX_RETRY_COUNT) {
       return await fn()
     } catch (error) {
       lastError = error
-      await sleep(RETRY_DELAY * (i + 1))
+      await sleep(calculateDelay(i))
     }
   }
   throw lastError
@@ -61,6 +63,20 @@ function logResponse(url, status, data) {
   }
 }
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 export async function apiRequest(path, options = {}) {
   const {
     method = 'GET',
@@ -71,7 +87,7 @@ export async function apiRequest(path, options = {}) {
     timeout = DEFAULT_TIMEOUT
   } = options
 
-  const requestId = Math.random().toString(36).substring(7)
+  const requestId = Math.random().toString(36).substring(REQUEST_ID_LENGTH)
   const startTime = Date.now()
 
   const url = buildUrl(path, params)
@@ -95,7 +111,7 @@ export async function apiRequest(path, options = {}) {
     init.body = JSON.stringify(body)
   }
 
-  const response = await fetch(url, init)
+  const response = await fetchWithTimeout(url, init, timeout)
   const text = await response.text()
   let payload = null
 
