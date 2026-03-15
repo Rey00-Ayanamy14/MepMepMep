@@ -1,163 +1,128 @@
 import { apiRequest } from './client.js'
 
+function createCrudApi(resourcePath, options = {}) {
+  const {
+    hasList = true,
+    hasCreate = true,
+    hasUpdate = true,
+    hasDelete = true,
+    customMethods = {}
+  } = options
+
+  const crudApi = {}
+
+  if (hasList) {
+    crudApi.list = (token, params) =>
+      apiRequest(resourcePath, { token, params })
+  }
+
+  if (hasCreate) {
+    crudApi.create = (token, payload) =>
+      apiRequest(resourcePath, {
+        method: 'POST',
+        token,
+        body: payload
+      })
+  }
+
+  if (hasUpdate) {
+    crudApi.update = (token, id, payload) =>
+      apiRequest(`${resourcePath}/${id}`, {
+        method: 'PUT',
+        token,
+        body: payload
+      })
+  }
+
+  if (hasDelete) {
+    crudApi.delete = (token, id) =>
+      apiRequest(`${resourcePath}/${id}`, {
+        method: 'DELETE',
+        token
+      })
+  }
+
+  return { ...crudApi, ...customMethods }
+}
+
+const PATHS = {
+  USERS: '/users',
+  VEHICLES: '/vehicles',
+  PRODUCTS: '/products',
+  DELIVERIES: '/deliveries',
+  COURIER: '/courier/deliveries',
+  ROUTES: '/routes',
+  LEGACY: '/legacy',
+  ANALYTICS: '/analytics',
+  NOTIFICATIONS: '/notifications'
+}
+
 export const api = {
-  users: {
-    list: (token, role) =>
-      apiRequest('/users', {
-        token,
-        params: role ? { role } : undefined
-      }),
-    create: (token, payload) =>
-      apiRequest('/users', {
-        method: 'POST',
-        token,
-        body: payload
-      }),
-    update: (token, id, payload) =>
-      apiRequest(`/users/${id}`, {
-        method: 'PUT',
-        token,
-        body: payload
-      }),
-    delete: (token, id) =>
-      apiRequest(`/users/${id}`, {
-        method: 'DELETE',
-        token
-      })
-  },
-  vehicles: {
-    list: (token) =>
-      apiRequest('/vehicles', {
-        token
-      }),
-    create: (token, payload) =>
-      apiRequest('/vehicles', {
-        method: 'POST',
-        token,
-        body: payload
-      }),
-    update: (token, id, payload) =>
-      apiRequest(`/vehicles/${id}`, {
-        method: 'PUT',
-        token,
-        body: payload
-      }),
-    delete: (token, id) =>
-      apiRequest(`/vehicles/${id}`, {
-        method: 'DELETE',
-        token
-      })
-  },
-  products: {
-    list: (token) =>
-      apiRequest('/products', {
-        token
-      }),
-    create: (token, payload) =>
-      apiRequest('/products', {
-        method: 'POST',
-        token,
-        body: payload
-      }),
-    update: (token, id, payload) =>
-      apiRequest(`/products/${id}`, {
-        method: 'PUT',
-        token,
-        body: payload
-      }),
-    delete: (token, id) =>
-      apiRequest(`/products/${id}`, {
-        method: 'DELETE',
-        token
-      })
-  },
-  deliveries: {
-    list: (token, filters) =>
-      apiRequest('/deliveries', {
-        token,
-        params: filters
-      }),
-    get: (token, id) =>
-      apiRequest(`/deliveries/${id}`, {
-        token
-      }),
-    create: (token, payload) =>
-      apiRequest('/deliveries', {
-        method: 'POST',
-        token,
-        body: payload
-      }),
-    update: (token, id, payload) =>
-      apiRequest(`/deliveries/${id}`, {
-        method: 'PUT',
-        token,
-        body: payload
-      }),
-    delete: (token, id) =>
-      apiRequest(`/deliveries/${id}`, {
-        method: 'DELETE',
-        token
-      }),
-    generate: (token, payload) =>
-      apiRequest('/deliveries/generate', {
-        method: 'POST',
-        token,
-        body: payload
-      })
-  },
+  users: createCrudApi(PATHS.USERS),
+  vehicles: createCrudApi(PATHS.VEHICLES),
+  products: createCrudApi(PATHS.PRODUCTS),
+  
+  deliveries: createCrudApi(PATHS.DELIVERIES, {
+    customMethods: {
+      get: (token, id) => apiRequest(`${PATHS.DELIVERIES}/${id}`, { token }),
+      generate: (token, payload) =>
+        apiRequest(`${PATHS.DELIVERIES}/generate`, {
+          method: 'POST',
+          token,
+          body: payload
+        })
+    }
+  }),
+  
   courier: {
     list: (token, filters) =>
-      apiRequest('/courier/deliveries', {
-        token,
-        params: filters
-      }),
+      apiRequest(PATHS.COURIER, { token, params: filters }),
     get: (token, id) =>
-      apiRequest(`/courier/deliveries/${id}`, {
-        token
-      })
+      apiRequest(`${PATHS.COURIER}/${id}`, { token })
   },
+  
   route: {
     calculate: (token, payload) =>
-      apiRequest('/routes/calculate', {
+      apiRequest(`${PATHS.ROUTES}/calculate`, {
         method: 'POST',
         token,
         body: payload
       })
   },
+  
   legacy: {
-    getOrders: (token) =>
-      apiRequest('/legacy/orders', { token }),
-    getCustomers: (token) =>
-      apiRequest('/legacy/customers', { token }),
+    getOrders: (token) => apiRequest(`${PATHS.LEGACY}/orders`, { token }),
+    getCustomers: (token) => apiRequest(`${PATHS.LEGACY}/customers`, { token }),
     syncData: (token, payload) =>
-      apiRequest('/legacy/sync', {
+      apiRequest(`${PATHS.LEGACY}/sync`, {
         method: 'POST',
         token,
         body: payload
       })
   },
+  
   analytics: {
     getStats: (token, period) =>
-      apiRequest('/analytics/stats', {
+      apiRequest(`${PATHS.ANALYTICS}/stats`, {
         token,
         params: { period }
       }),
     getReport: (token, type, dateFrom, dateTo) =>
-      apiRequest('/analytics/report', {
+      apiRequest(`${PATHS.ANALYTICS}/report`, {
         token,
         params: { type, dateFrom, dateTo }
       })
   },
+  
   notifications: {
-    list: (token) =>
-      apiRequest('/notifications', { token }),
+    list: (token) => apiRequest(PATHS.NOTIFICATIONS, { token }),
     markRead: (token, id) =>
-      apiRequest(`/notifications/${id}/read`, {
+      apiRequest(`${PATHS.NOTIFICATIONS}/${id}/read`, {
         method: 'POST',
         token
       }),
     markAllRead: (token) =>
-      apiRequest('/notifications/read-all', {
+      apiRequest(`${PATHS.NOTIFICATIONS}/read-all`, {
         method: 'POST',
         token
       })
@@ -168,12 +133,4 @@ export const oldApi = {
   fetchUsers: (token) => apiRequest('/old/users', { token }),
   fetchVehicles: (token) => apiRequest('/old/vehicles', { token }),
   fetchDeliveries: (token) => apiRequest('/old/deliveries', { token })
-}
-
-export function buildEndpoint(base, ...parts) {
-  return [base, ...parts].join('/')
-}
-
-export function withAuth(request, token) {
-  return { ...request, token }
 }
