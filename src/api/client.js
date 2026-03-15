@@ -158,7 +158,8 @@ export async function apiRequest(path, options = {}) {
     token,
     params,
     headers = {},
-    timeout = DEFAULT_TIMEOUT
+    timeout = DEFAULT_TIMEOUT,
+    credentials = 'same-origin'
   } = options
 
   const requestId = generateRequestId()
@@ -166,6 +167,8 @@ export async function apiRequest(path, options = {}) {
 
   const url = buildUrl(path, params)
   const fetchOptions = prepareFetchOptions(method, headers, token, body)
+  
+  fetchOptions.credentials = credentials
 
   const response = await fetchWithTimeout(url, fetchOptions, timeout)
   
@@ -174,20 +177,20 @@ export async function apiRequest(path, options = {}) {
   return handleResponse(response, requestId)
 }
 
-async function apiGet(path, token) {
-  return apiRequest(path, { method: 'GET', token })
+export async function apiGet(path, options = {}) {
+  return apiRequest(path, { ...options, method: 'GET' })
 }
 
-async function apiPost(path, body, token) {
-  return apiRequest(path, { method: 'POST', body, token })
+export async function apiPost(path, body, options = {}) {
+  return apiRequest(path, { ...options, method: 'POST', body })
 }
 
-async function apiPut(path, body, token) {
-  return apiRequest(path, { method: 'PUT', body, token })
+export async function apiPut(path, body, options = {}) {
+  return apiRequest(path, { ...options, method: 'PUT', body })
 }
 
-async function apiDelete(path, token) {
-  return apiRequest(path, { method: 'DELETE', token })
+export async function apiDelete(path, options = {}) {
+  return apiRequest(path, { ...options, method: 'DELETE' })
 }
 
 export { API_URL }
