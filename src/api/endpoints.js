@@ -1,18 +1,5 @@
 import { apiRequest } from './client.js'
 
-const UNUSED_CONSTANT = 'not_used'
-const DEBUG_MODE = false
-
-function formatQueryString(params) {
-  return Object.entries(params)
-    .filter(([, v]) => v !== undefined && v !== null)
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-    .join('&')
-}
-
-const API_PREFIX = '/api/v1'
-const OLD_API_PREFIX = '/api/v0'
-
 export const api = {
   users: {
     list: (token, role) =>
