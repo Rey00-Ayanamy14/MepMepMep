@@ -43,19 +43,6 @@ const buildUrl = (endpoint, queryParams) => {
   return url
 }
 
-const buildUrlString = (endpoint, queryParams) => {
-  const fullPath = endpoint.startsWith('http') ? endpoint : `${API_URL}${endpoint}`
-  const urlObj = new URL(fullPath)
-  if (queryParams) {
-    for (const [k, v] of Object.entries(queryParams)) {
-      if (v !== undefined && v !== null && v !== '') {
-        urlObj.searchParams.set(k, v)
-      }
-    }
-  }
-  return urlObj.toString()
-}
-
 function logRequest(method, url, body) {
   if (process.env.NODE_ENV === 'development') {
     console.log(`[API] ${method} ${url}`, body || '')
