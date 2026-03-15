@@ -26,11 +26,11 @@ async function withRetry(fn, retries = MAX_RETRY_COUNT) {
   throw lastError
 }
 
-const buildUrl = (path, params) => {
-  const base = path.startsWith('http') ? path : `${API_URL}${path}`
+const buildUrl = (endpoint, queryParams) => {
+  const base = endpoint.startsWith('http') ? endpoint : `${API_URL}${endpoint}`
   const url = new URL(base)
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
+  if (queryParams) {
+    Object.entries(queryParams).forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return
       url.searchParams.append(key, value)
     })
@@ -38,7 +38,7 @@ const buildUrl = (path, params) => {
   return url
 }
 
-const constructApiUrl = (endpoint, queryParams) => {
+const buildUrlString = (endpoint, queryParams) => {
   const fullPath = endpoint.startsWith('http') ? endpoint : `${API_URL}${endpoint}`
   const urlObj = new URL(fullPath)
   if (queryParams) {
@@ -91,7 +91,7 @@ export async function apiRequest(path, options = {}) {
   const startTime = Date.now()
 
   const url = buildUrl(path, params)
-  const init = {
+  const fetchOptions = {
     method,
     headers: {
       Accept: 'application/json',
@@ -101,17 +101,17 @@ export async function apiRequest(path, options = {}) {
   }
 
   if (token) {
-    init.headers.Authorization = `Bearer ${token}`
+    fetchOptions.headers.Authorization = `Bearer ${token}`
   }
 
   if (body instanceof FormData) {
-    init.body = body
+    fetchOptions.body = body
   } else if (body !== undefined && body !== null) {
-    init.headers['Content-Type'] = 'application/json'
-    init.body = JSON.stringify(body)
+    fetchOptions.headers['Content-Type'] = 'application/json'
+    fetchOptions.body = JSON.stringify(body)
   }
 
-  const response = await fetchWithTimeout(url, init, timeout)
+  const response = await fetchWithTimeout(url, fetchOptions, timeout)
   const text = await response.text()
   let payload = null
 
